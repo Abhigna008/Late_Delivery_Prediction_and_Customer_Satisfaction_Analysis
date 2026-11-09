@@ -20,7 +20,7 @@
 | | Finding |
 |---|---|
 | **The problem** | **6.8%** of delivered orders (6,534 of 96,470) arrive after the promised date. |
-| **Why it matters** | Late orders are **6.6× more likely** to get a 1–2 star review: **64.8%** vs **9.8%** for on-time orders. |
+| **Why it matters** | Late orders are **6.6× more likely** to get a 1–2 star review: **64.8%** vs **9.8%** for on-time orders (among orders with a review). |
 | **Where & when** | Lateness rises from **4.4%** (under 100 km) to **12.0%** (over 2,000 km), hits **21%** in Alagoas vs **4.5%** in São Paulo, and peaked at **19%** in March 2018. |
 | **The model** | A gradient boosting model (**ROC-AUC 0.79**) flags **27%** of orders as *High risk*, and that group contains **70% of all late deliveries**. |
 | **The dashboard** | A 3-page Power BI report (overview, delay drivers, order risk), with measures validated against the SQL and Python results. |
@@ -76,7 +76,13 @@ Key techniques:
 [`sql/03_business_questions.sql`](sql/03_business_questions.sql) answers 5 business questions on that table: the review impact, and the late rate by state, product category, month and seller.
 
 ### 3.2 Exploratory data analysis
-[`notebooks/01_eda.ipynb`](notebooks/01_eda.ipynb) loads the table straight from PostgreSQL and turns the questions into charts.
+[`notebooks/01_eda.ipynb`](notebooks/01_eda.ipynb) loads the table straight from PostgreSQL, checks data quality, and turns the questions into charts.
+
+**Data quality checks** before any analysis:
+- missing values are rare (under 1%): 477 orders without coordinates (no distance), ~650 without a review, 16 without a product weight
+- extreme but genuine delivery times (up to 210 days) are kept, and charts are zoomed so they stay readable
+- invalid values were flagged: products weighing 0 g and orders with 0 installments
+- zip codes are treated as identifiers, not numbers (an "average zip code" is meaningless), so distance is used instead
 
 | # | Question | Finding |
 |---|---|---|
@@ -109,17 +115,24 @@ Key techniques:
 
 > The lazy baseline scores **93% accuracy** while catching zero late orders, which is why accuracy is not used to judge the models here.
 
-Gradient boosting improves on the baseline on every measure: it catches **58 more late orders** while raising **28% fewer false alarms**, because it learns *combinations* of risk factors (e.g. far away **and** a short promise **and** a peak month).
+**How to read these metrics:**
+- **Recall:** of all orders that really were late, the share the model caught. *70% = about 7 in 10 late orders are flagged in advance.*
+- **Precision:** of all orders the model flagged, the share that really were late. *17.5% = about 1 in 6 flags is a real late order, 2.6× the 6.8% base rate.* False alarms are cheap here (e.g. a "your order may take longer" message), while a missed late order often costs a 1-star review.
+- **ROC-AUC:** how well the model ranks risky orders above safe ones. 0.5 is a coin flip, 1.0 is perfect; *0.79 means a late order gets a higher risk score than an on-time order 79% of the time.*
 
-**What drives the predictions** (permutation importance, drop in ROC-AUC when a feature is shuffled):
+The logistic regression serves as a simple, explainable baseline. Gradient boosting (`HistGradientBoostingClassifier`, with early stopping on a validation split, which settled at 66 trees) improves on it on every measure: it catches **58 more late orders** while raising **28% fewer false alarms**, because it learns *combinations* of risk factors (e.g. far away **and** a short promise **and** a peak month).
+
+**What drives the predictions.** Measured with permutation importance: each feature is randomly shuffled and the drop in ROC-AUC is recorded. The bigger the drop, the more the model relies on it.
 
 | Driver | Importance |
 |---|---|
 | Purchase month | 0.143 |
 | Promised delivery days | 0.082 |
-| Distance | 0.049 |
 | Customer / seller location (all state columns combined) | ~0.053 |
+| Distance | 0.049 |
 | Order size, price, weight, freight | each < 0.01 |
+
+In plain words: lateness depends mostly on **when** an order is placed, **how generous the promise is**, and **where it travels**, and hardly on what is inside the box.
 
 **Risk bands.** Every test order gets a risk score, grouped into bands:
 
